@@ -3,20 +3,9 @@ const { Command, flags } = require("@oclif/command")
 const BCHJS = require("@chris.troutner/bch-js")
 const bchjs = new BCHJS()
 
-// Send the Permissionless Software Foundation a donation to thank them for creating
-// and maintaining this software.
-const PSF_DONATION = 2000
-const bchDonation = require("bch-donation")
-
-// Used for debugging and iterrogating JS objects.
-const util = require("util")
-util.inspect.defaultOptions = { depth: 1 }
-
-const WIF = process.env.WIF
-
 let _this
 
-class MemoPushCommand extends Command {
+class MemoGetCommand extends Command {
   constructor(argv, config) {
     super(argv, config)
 
@@ -26,36 +15,26 @@ class MemoPushCommand extends Command {
   }
 
   async run() {
-    const { flags } = this.parse(MemoPushCommand)
+    const { flags } = this.parse(MemoGetCommand)
 
     try {
-      const hash = flags.publish
+      const addr = flags.address
 
-      if (hash && hash !== "") {
-        // Exit if the WIF is not defined in the environment variable.
-        if (!WIF || WIF === "") {
-          console.log(
-            `Please add your WIF key to the WIF environment variable.`
-          )
-          return
-        }
+      if (!addr || addr === "") throw new Error(`Please specify a BCH address.`)
 
-        // Create an EC Key Pair from the user-supplied WIF.
-        const ecPair = _this.bchjs.ECPair.fromWIF(WIF)
+      // Prefact text to put in front of the message.
+      const preface = "IPFS UPDATE"
 
-        // Generate the public address that corresponds to this WIF.
-        const ADDR = _this.bchjs.ECPair.toCashAddress(ecPair)
-        console.log(`Publishing ${hash} to ${ADDR}`)
+      const str = await this.read(addr, preface)
 
-        // Prefact text to put in front of the message.
-        const preface = "IPFS UPDATE"
-
-        const txidStr = await this.publish(hash, WIF, preface)
-
-        console.log(`Transaction ID: ${txidStr}`)
-        console.log(`https://memo.cash/post/${txidStr}`)
-        console.log(`https://explorer.bitcoin.com/bch/tx/${txidStr}`)
+      if (!str) {
+        console.log(
+          `Could not find any messages that match the preface ${preface}.`
+        )
+        return
       }
+
+      console.log(`Message found: ${str}`)
 
       //this.log(`hello ${name} from ./src/index.js`)
     } catch (err) {
@@ -63,113 +42,124 @@ class MemoPushCommand extends Command {
     }
   }
 
-  // Publish an IPFS hash to the blockchain. Pay for the TX with the WIF.
-  // Optional preface text will replace the default 'IPFS UPDATE' used to
-  // signal updates for the ipfs-web-server.
-  async publish(hash, wif, preface) {
+  // Read the transaction history of the address. Looks for an OP_RETURN message
+  // with a matching preface.
+  async read(addr, preface) {
     try {
-      // Create an EC Key Pair from the user-supplied WIF.
-      const ecPair = _this.bchjs.ECPair.fromWIF(wif)
+      const txHist = await this.bchjs.Electrumx.transactions(addr)
+      // console.log(`txHist: ${JSON.stringify(txHist, null, 2)}`)
 
-      // Generate the public address that corresponds to this WIF.
-      const ADDR = _this.bchjs.ECPair.toCashAddress(ecPair)
-      // console.log(`Publishing ${hash} to ${ADDR}`)
+      if (!txHist.success)
+        throw new Error(`No transaction history could be found for ${addr}`)
 
-      // Pick a UTXO controlled by this address.
-      const u = await _this.bchjs.Blockbook.utxo(ADDR)
-      const utxo = findBiggestUtxo(u)
+      // Sort the transactions so that newest is first.
+      const txs = _this.sortTxsByHeight(txHist.transactions, "DESCENDING")
 
-      // instance of transaction builder
-      const transactionBuilder = new _this.bchjs.TransactionBuilder()
+      // Loop through each transaction associated with this address.
+      for (let i = 0; i < txs.length; i++) {
+        const thisTXID = txs[i].tx_hash
+        // console.log(`Inspecting TXID ${thisTXID}`)
 
-      //const satoshisToSend = SATOSHIS_TO_SEND
-      const originalAmount = utxo.satoshis
-      const vout = utxo.vout
-      const txid = utxo.txid
+        const thisTx = await _this.bchjs.RawTransactions.getRawTransaction(
+          thisTXID,
+          true
+        )
+        //console.log(`thisTx: ${JSON.stringify(thisTx, null, 2)}`)
 
-      // add input with txid and index of vout
-      transactionBuilder.addInput(txid, vout)
+        // Loop through all the vout entries in this transaction.
+        for (let j = 0; j < thisTx.vout.length; j++) {
+          //for (let j = 0; j < 5; j++) {
+          const thisVout = thisTx.vout[j]
+          //console.log(`thisVout: ${JSON.stringify(thisVout,null,2)}`)
 
-      // TODO: Compute the 1 sat/byte fee.
-      const fee = 500
+          // Assembly code representation of the transaction.
+          const asm = thisVout.scriptPubKey.asm
+          //console.log(`asm: ${asm}`)
 
-      // Send the same amount - fee.
-      transactionBuilder.addOutput(ADDR, originalAmount - fee - PSF_DONATION)
+          // Decode the transactions assembly code.
+          const msg = this.decodeTransaction2(asm)
+          //console.log(`msg: ${msg}`)
 
-      // Default preface, or override if user specified.
-      let prefaceStr = "IPFS UPDATE"
-      if (preface) prefaceStr = preface
-
-      // Add the memo.cash OP_RETURN to the transaction.
-      const script = [
-        _this.bchjs.Script.opcodes.OP_RETURN,
-        Buffer.from("6d02", "hex"),
-        Buffer.from(`${prefaceStr} ${hash}`)
-      ]
-
-      //console.log(`script: ${util.inspect(script)}`);
-      const data = _this.bchjs.Script.encode2(script)
-      //console.log(`data: ${util.inspect(data)}`);
-      transactionBuilder.addOutput(data, 0)
-
-      // Send a 2000 sat donation to PSF for creating and maintaining this software.
-      transactionBuilder.addOutput(bchDonation("psf").donations, PSF_DONATION)
-
-      // Sign the transaction with the HD node.
-      let redeemScript
-      transactionBuilder.sign(
-        0,
-        ecPair,
-        redeemScript,
-        transactionBuilder.hashTypes.SIGHASH_ALL,
-        originalAmount
-      )
-
-      // build tx
-      const tx = transactionBuilder.build()
-      // output rawhex
-      const hex = tx.toHex()
-      // console.log(`TX hex: ${hex}`)
-      //console.log(` `);
-
-      // Broadcast transation to the network
-      const txidStr = await _this.bchjs.RawTransactions.sendRawTransaction(hex)
-
-      return txidStr
+          if (msg) {
+            // Filter the code to see if it contains an IPFS hash.
+            const hash = this.filterHash(msg, preface)
+            if (hash) {
+              // console.log(`Hash found! ${hash}`)
+              return hash
+            }
+          }
+        }
+      }
     } catch (err) {
-      console.error(`Error in memo-push/publish()`)
+      console.error(`Error in memo-get/read()`)
       throw err
     }
   }
+
+  // The original decodeTransaction() did not work on the front end. This function
+  // is a hack around the issue.
+  decodeTransaction2(asm) {
+    try {
+      const asmWords = asm.split(" ")
+      //console.log(`asmWords: ${JSON.stringify(asmWords,null,2)}`)
+
+      if (asmWords[0] === "OP_RETURN" && asmWords[1] === "621") {
+        const msg = Buffer.from(asmWords[2], "hex").toString()
+        // console.log(`msg: ${msg}`)
+
+        return msg
+      }
+
+      return false
+    } catch (err) {
+      console.warn(`Error in decodeTransaction2: `, err)
+      return false
+    }
+  }
+
+  // Filters a string to see if it matches the proper pattern of:
+  // 'IPFS UPDATE <hash>'
+  // Returns the hash if the pattern matches. Otherwise, returns false.
+  filterHash(msg, preface) {
+    try {
+      if (msg.indexOf(preface) > -1) {
+        // console.log(`match found`)
+
+        // Split the message between the preface and the payload.
+        const parts = msg.split(`${preface} `)
+
+        const payload = parts[1]
+        return payload
+      }
+    } catch (err) {
+      // Exit silently
+      return false
+    }
+  }
+
+  // Sort the Transactions by the block height
+  sortTxsByHeight(txs, sortingOrder = "ASCENDING") {
+    if (sortingOrder === "ASCENDING")
+      return txs.sort((a, b) => a.height - b.height)
+    return txs.sort((a, b) => b.height - a.height)
+  }
 }
 
-MemoPushCommand.description = `Publish IPFS to memo.cash
-Publish IPFS hashes to the BCH blockchain using the memo.cash protocol
+MemoGetCommand.description = `Read OP_RETURN messages from the BCH Blockchain
+Crawls the transaction history of a Bitcoin Cash address, looking for transactions
+with an OP_RETURN message following the memo.cash protocol, which matches the
+prefix.
 `
 
-MemoPushCommand.flags = {
+MemoGetCommand.flags = {
   // add --version flag to show CLI version
   version: flags.version({ char: "v" }),
   // add --help flag to show CLI version
   help: flags.help({ char: "h" }),
-  publish: flags.string({ char: "p", description: "IPFS hash to publish" })
+  address: flags.string({
+    char: "a",
+    description: "Bitcoin Cash address to check"
+  })
 }
 
-// Returns the utxo with the biggest balance from an array of utxos.
-function findBiggestUtxo(utxos) {
-  let largestAmount = 0
-  let largestIndex = 0
-
-  for (var i = 0; i < utxos.length; i++) {
-    const thisUtxo = utxos[i]
-
-    if (thisUtxo.satoshis > largestAmount) {
-      largestAmount = thisUtxo.satoshis
-      largestIndex = i
-    }
-  }
-
-  return utxos[largestIndex]
-}
-
-module.exports = MemoPushCommand
+module.exports = MemoGetCommand

@@ -1,7 +1,7 @@
 {
-  "name": "memo-push",
+  "name": "memo-get",
   "version": "1.0.0",
-  "description": "Publish IPFS hashes to the BCH blockchain using the memo.cash protocol",
+  "description": "Read messages from the BCH blockchain using the memo.cash protocol",
   "main": "src/index.js",
   "scripts": {
     "test": "nyc mocha --forbid-only \"test/**/*.test.js\"",
@@ -12,11 +12,11 @@
     "memo-push": "./bin/run"
   },
   "bugs": {
-    "url": "https://github.com/christroutner/memo-push/issues"
+    "url": "https://github.com/christroutner/memo-get/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/christroutner/memo-push.git"
+    "url": "git+https://github.com/christroutner/memo-get.git"
   },
   "keywords": [
     "ipfs",
@@ -29,7 +29,7 @@
   ],
   "author": "Chris Troutner <chris.troutner@gmail.com>",
   "license": "MIT",
-  "homepage": "https://github.com/christroutner/memo-push#readme",
+  "homepage": "https://github.com/christroutner/memo-get#readme",
   "dependencies": {
     "@chris.troutner/bch-js": "3.2.0",
     "@oclif/command": "^1.5.13",
@@ -53,6 +53,6 @@
     "/src"
   ],
   "oclif": {
-    "bin": "memo-push"
+    "bin": "memo-get"
   }
 }
